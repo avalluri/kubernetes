@@ -29,6 +29,7 @@ go_library(
         "langle_separated_map_string_string.go",
         "map_string_bool.go",
         "map_string_string.go",
+        "map_string_intarray.go",
         "namedcertkey_flag.go",
         "omitempty.go",
         "string_flag.go",

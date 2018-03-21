@@ -28,8 +28,8 @@ import (
 
 type stateFileData struct {
 	PolicyName    string            `json:"policyName"`
-	DefaultCPUSet string            `json:"defaultCpuSet"`
 	Entries       map[string]string `json:"entries,omitempty"`
+	Pools         map[string]string `json:"pools,omitempty"`
 }
 
 var _ State = &stateFile{}
@@ -56,6 +56,8 @@ func NewFileState(filePath string, policyName string) State {
 		stateFile.storeState()
 	}
 
+	glog.Infof("[cpumanager] state file path: %s", filePath)
+
 	return stateFile
 }
 
@@ -68,8 +70,8 @@ func (sf *stateFile) tryRestoreState() error {
 
 	// used when all parsing is ok
 	tmpAssignments := make(ContainerCPUAssignments)
-	tmpDefaultCPUSet := cpuset.NewCPUSet()
 	tmpContainerCPUSet := cpuset.NewCPUSet()
+	pools := make(map[string]cpuset.CPUSet)
 
 	var content []byte
 
@@ -93,9 +95,13 @@ func (sf *stateFile) tryRestoreState() error {
 			return fmt.Errorf("policy configured \"%s\" != policy from state file \"%s\"", sf.policyName, readState.PolicyName)
 		}
 
-		if tmpDefaultCPUSet, err = cpuset.Parse(readState.DefaultCPUSet); err != nil {
-			glog.Warningf("[cpumanager] state file: could not parse state file - [defaultCpuSet:\"%s\"]", readState.DefaultCPUSet)
-			return err
+		for poolName, cpuString := range readState.Pools {
+			if cset, err := cpuset.Parse(cpuString); err != nil {
+				glog.Warningf("[cpumanager] state file: could not parse state file - pool %s, cpuset: \"%s\"", poolName, cpuString)
+				return err
+			} else {
+				pools[poolName] = cset
+			}
 		}
 
 		for containerID, cpuString := range readState.Entries {
@@ -106,11 +112,14 @@ func (sf *stateFile) tryRestoreState() error {
 			tmpAssignments[containerID] = tmpContainerCPUSet
 		}
 
-		sf.cache.SetDefaultCPUSet(tmpDefaultCPUSet)
+		for poolName, cset := range pools {
+			sf.cache.SetPoolCPUSet(poolName, cset)
+			glog.V(2).Infof("[cpumanager] pool \"%s\" CPUSet: %s", poolName, cset.String())
+		}
+
 		sf.cache.SetCPUAssignments(tmpAssignments)
 
 		glog.V(2).Infof("[cpumanager] state file: restored state from state file \"%s\"", sf.stateFilePath)
-		glog.V(2).Infof("[cpumanager] state file: defaultCPUSet: %s", tmpDefaultCPUSet.String())
 	}
 	return nil
 }
@@ -122,8 +131,12 @@ func (sf *stateFile) storeState() {
 
 	data := stateFileData{
 		PolicyName:    sf.policyName,
-		DefaultCPUSet: sf.cache.GetDefaultCPUSet().String(),
 		Entries:       map[string]string{},
+		Pools:         map[string]string{},
+	}
+
+	for poolName, cset := range sf.cache.GetCPUPools() {
+		data.Pools[poolName] = cset.String()
 	}
 
 	for containerID, cset := range sf.cache.GetCPUAssignments() {
@@ -148,6 +161,15 @@ func (sf *stateFile) GetCPUSet(containerID string) (cpuset.CPUSet, bool) {
 	return res, ok
 }
 
+func (sf *stateFile) GetPoolCPUSet(pool string) (cpuset.CPUSet, bool) {
+	sf.RLock()
+	defer sf.RUnlock()
+
+	res, ok := sf.cache.GetPoolCPUSet(pool)
+
+	return res, ok
+}
+
 func (sf *stateFile) GetDefaultCPUSet() cpuset.CPUSet {
 	sf.RLock()
 	defer sf.RUnlock()
@@ -168,10 +190,23 @@ func (sf *stateFile) GetCPUAssignments() ContainerCPUAssignments {
 	return sf.cache.GetCPUAssignments()
 }
 
+func (sf *stateFile) GetCPUPools() map[string]cpuset.CPUSet {
+	sf.RLock()
+	defer sf.RUnlock()
+	return sf.cache.GetCPUPools()
+}
+
 func (sf *stateFile) SetCPUSet(containerID string, cset cpuset.CPUSet) {
 	sf.Lock()
 	defer sf.Unlock()
 	sf.cache.SetCPUSet(containerID, cset)
+	sf.storeState()
+}
+
+func (sf *stateFile) SetPoolCPUSet(pool string, cset cpuset.CPUSet) {
+	sf.Lock()
+	defer sf.Unlock()
+	sf.cache.SetPoolCPUSet(pool, cset)
 	sf.storeState()
 }
 
