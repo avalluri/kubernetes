@@ -24,7 +24,6 @@ import (
 	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
 // PolicyStatic is the name of the static policy
@@ -74,7 +73,7 @@ type staticPolicy struct {
 	// cpu socket topology
 	topology *topology.CPUTopology
 	// set of CPUs that is not available for exclusive assignment
-	reserved cpuset.CPUSet
+	reserved int
 }
 
 // Ensure staticPolicy implements Policy interface
@@ -84,23 +83,9 @@ var _ Policy = &staticPolicy{}
 // assignments for exclusively pinned guaranteed containers after the main
 // container process starts.
 func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int) Policy {
-	allCPUs := topology.CPUDetails.CPUs()
-	// takeByTopology allocates CPUs associated with low-numbered cores from
-	// allCPUs.
-	//
-	// For example: Given a system with 8 CPUs available and HT enabled,
-	// if numReservedCPUs=2, then reserved={0,4}
-	reserved, _ := takeByTopology(topology, allCPUs, numReservedCPUs)
-
-	if reserved.Size() != numReservedCPUs {
-		panic(fmt.Sprintf("[cpumanager] unable to reserve the required amount of CPUs (size of %s did not equal %d)", reserved, numReservedCPUs))
-	}
-
-	glog.Infof("[cpumanager] reserved %d CPUs (\"%s\") not available for exclusive assignment", reserved.Size(), reserved)
-
 	return &staticPolicy{
 		topology: topology,
-		reserved: reserved,
+		reserved: numReservedCPUs,
 	}
 }
 
@@ -109,6 +94,29 @@ func (p *staticPolicy) Name() string {
 }
 
 func (p *staticPolicy) Start(s state.State) {
+	allCPUs := p.topology.CPUDetails.CPUs()
+	// takeByTopology allocates CPUs associated with low-numbered cores from
+	// allCPUs.
+	//
+	// For example: Given a system with 8 CPUs available and HT enabled,
+	// if p.reserved=2, then reserved={0,4}
+	reserved, _ := takeByTopology(p.topology, allCPUs, p.reserved)
+
+	if reserved.Size() != p.reserved {
+		panic(fmt.Sprintf("[cpumanager] unable to reserve the required amount of CPUs (size of %s did not equal %d)", reserved, p.reserved))
+	}
+
+	glog.Infof("[cpumanager] reserved %d CPUs (\"%s\") not available for exclusive assignment", reserved.Size(), reserved)
+
+	cfg := state.DefaultPoolConfig(takeByTopology, p.reserved, p.topology)
+
+	s.SetAllocator(takeByTopology, p.topology)
+
+	if err := s.Reconfigure(cfg); err != nil {
+		glog.Errorf("[cpumanager] static policy failed to start: %s\n", err.Error())
+		panic("[cpumanager] - please drain node and remove policy state file")
+	}
+
 	if err := p.validateState(s); err != nil {
 		glog.Errorf("[cpumanager] static policy invalid state: %s\n", err.Error())
 		panic("[cpumanager] - please drain node and remove policy state file")
@@ -116,43 +124,32 @@ func (p *staticPolicy) Start(s state.State) {
 }
 
 func (p *staticPolicy) validateState(s state.State) error {
-	tmpAssignments := s.GetCPUAssignments()
-	tmpDefaultCPUset := s.GetDefaultCPUSet()
+	pools := s.GetPoolCPUs()
+	containers := s.GetPoolAssignments()
 
-	// Default cpuset cannot be empty when assignments exist
-	if tmpDefaultCPUset.IsEmpty() {
-		if len(tmpAssignments) != 0 {
-			return fmt.Errorf("default cpuset cannot be empty")
-		}
-		// state is empty initialize
-		allCPUs := p.topology.CPUDetails.CPUs()
-		s.SetDefaultCPUSet(allCPUs)
-		return nil
-	}
+	res := pools[state.ReservedPool]
+	def := pools[state.DefaultPool]
 
 	// State has already been initialized from file (is not empty)
-	// 1 Check if the reserved cpuset is not part of default cpuset because:
+	// 1. Check that the reserved and default cpusets are disjoint:
 	// - kube/system reserved have changed (increased) - may lead to some containers not being able to start
 	// - user tampered with file
-	if !p.reserved.Intersection(tmpDefaultCPUset).Equals(p.reserved) {
-		return fmt.Errorf("not all reserved cpus: \"%s\" are present in defaultCpuSet: \"%s\"",
-			p.reserved.String(), tmpDefaultCPUset.String())
+	if !res.Intersection(def).IsEmpty() {
+		return fmt.Errorf("overlapping reserved (%s) and default (%s) CPI pools", res.String(), def.String())
 	}
 
-	// 2. Check if state for static policy is consistent
-	for cID, cset := range tmpAssignments {
-		// None of the cpu in DEFAULT cset should be in s.assignments
-		if !tmpDefaultCPUset.Intersection(cset).IsEmpty() {
-			return fmt.Errorf("container id: %s cpuset: \"%s\" overlaps with default cpuset \"%s\"",
-				cID, cset.String(), tmpDefaultCPUset.String())
+	// 2. Check if state for static policy is consistent: exclusive assignments and (default U reserved) are disjoint.
+	resdef := res.Union(def)
+	for id, cpus := range containers {
+		if !cpus.IsEmpty() {
+			if !resdef.Union(cpus).IsEmpty() {
+				return fmt.Errorf("container id: %s cpuset: \"%s\" overlaps with default cpuset \"%s\"",
+					id, cpus.String(), resdef.String())
+			}
 		}
 	}
-	return nil
-}
 
-// assignableCPUs returns the set of unassigned CPUs minus the reserved set.
-func (p *staticPolicy) assignableCPUs(s state.State) cpuset.CPUSet {
-	return s.GetDefaultCPUSet().Difference(p.reserved)
+	return nil
 }
 
 func (p *staticPolicy) AddContainer(s state.State, pod *v1.Pod, container *v1.Container, containerID string) error {
@@ -165,50 +162,33 @@ func (p *staticPolicy) AddContainer(s state.State, pod *v1.Pod, container *v1.Co
 			return nil
 		}
 
-		cpuset, err := p.allocateCPUs(s, numCPUs)
+		_, err := s.AllocateCPUs(containerID, state.DefaultPool, numCPUs)
 		if err != nil {
 			glog.Errorf("[cpumanager] unable to allocate %d CPUs (container id: %s, error: %v)", numCPUs, containerID, err)
 			return err
 		}
-		s.SetCPUSet(containerID, cpuset)
 	}
-	// container belongs in the shared pool (nothing to do; use default cpuset)
+
 	return nil
 }
 
 func (p *staticPolicy) RemoveContainer(s state.State, containerID string) error {
 	glog.Infof("[cpumanager] static policy: RemoveContainer (container id: %s)", containerID)
-	if toRelease, ok := s.GetCPUSet(containerID); ok {
-		s.Delete(containerID)
-		// Mutate the shared pool, adding released cpus.
-		s.SetDefaultCPUSet(s.GetDefaultCPUSet().Union(toRelease))
-	}
+	s.ReleaseCPU(containerID)
+
 	return nil
 }
 
-func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int) (cpuset.CPUSet, error) {
-	glog.Infof("[cpumanager] allocateCpus: (numCPUs: %d)", numCPUs)
-	result, err := takeByTopology(p.topology, p.assignableCPUs(s), numCPUs)
-	if err != nil {
-		return cpuset.NewCPUSet(), err
-	}
-	// Remove allocated CPUs from the shared CPUSet.
-	s.SetDefaultCPUSet(s.GetDefaultCPUSet().Difference(result))
-
-	glog.Infof("[cpumanager] allocateCPUs: returning \"%v\"", result)
-	return result, nil
-}
-
 func guaranteedCPUs(pod *v1.Pod, container *v1.Container) int {
-	if v1qos.GetPodQOS(pod) != v1.PodQOSGuaranteed {
-		return 0
-	}
-	cpuQuantity := container.Resources.Requests[v1.ResourceCPU]
-	if cpuQuantity.Value()*1000 != cpuQuantity.MilliValue() {
-		return 0
-	}
-	// Safe downcast to do for all systems with < 2.1 billion CPUs.
-	// Per the language spec, `int` is guaranteed to be at least 32 bits wide.
-	// https://golang.org/ref/spec#Numeric_types
-	return int(cpuQuantity.Value())
+       if v1qos.GetPodQOS(pod) != v1.PodQOSGuaranteed {
+               return 0
+        }
+       cpuQuantity := container.Resources.Requests[v1.ResourceCPU]
+       if cpuQuantity.Value()*1000 != cpuQuantity.MilliValue() {
+               return 0
+        }
+       // Safe downcast to do for all systems with < 2.1 billion CPUs.
+       // Per the language spec, `int` is guaranteed to be at least 32 bits wide.
+       // https://golang.org/ref/spec#Numeric_types
+       return int(cpuQuantity.Value())
 }

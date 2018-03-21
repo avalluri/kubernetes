@@ -45,8 +45,11 @@ type runtimeService interface {
 
 type policyName string
 
-// CPUManagerStateFileName is the name file name where cpu manager stores it's state
+// CPUManagerStateFileName is the name of the file where cpu manager stores its state
 const CPUManagerStateFileName = "cpu_manager_state"
+
+// CPUManagerPoolConfig  is the name of the file where CPU pool configuration is set
+const CPUManagerPoolConfig = "/etc/kubernetes/cpu-pools.cfg"
 
 // Manager interface provides methods for Kubelet to manage pod cpus.
 type Manager interface {
@@ -93,13 +96,28 @@ type manager struct {
 	machineInfo *cadvisorapi.MachineInfo
 
 	nodeAllocatableReservation v1.ResourceList
+
+	poolConfig map[string]string
 }
 
 var _ Manager = &manager{}
 
 // NewManager creates new cpu manager based on provided policy
-func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo *cadvisorapi.MachineInfo, nodeAllocatableReservation v1.ResourceList, stateFileDirecory string) (Manager, error) {
+func NewManager(
+	cpuPolicyName string,
+	reconcilePeriod time.Duration,
+	poolConfig map[string]string,
+	machineInfo *cadvisorapi.MachineInfo,
+	nodeAllocatableReservation v1.ResourceList,
+	stateFileDirectory string,
+) (Manager, error) {
 	var policy Policy
+
+	topo, err := topology.Discover(machineInfo)
+	if err != nil {
+		return nil, err
+	}
+	glog.Infof("[cpumanager] detected CPU topology: %v", topo)
 
 	switch policyName(cpuPolicyName) {
 
@@ -107,11 +125,6 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 		policy = NewNonePolicy()
 
 	case PolicyStatic:
-		topo, err := topology.Discover(machineInfo)
-		if err != nil {
-			return nil, err
-		}
-		glog.Infof("[cpumanager] detected CPU topology: %v", topo)
 		reservedCPUs, ok := nodeAllocatableReservation[v1.ResourceCPU]
 		if !ok {
 			// The static policy cannot initialize without this information.
@@ -132,14 +145,38 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 		numReservedCPUs := int(math.Ceil(reservedCPUsFloat))
 		policy = NewStaticPolicy(topo, numReservedCPUs)
 
+	case PolicyPool:
+		reservedCPUs, ok := nodeAllocatableReservation[v1.ResourceCPU]
+		if !ok {
+			// The pool policy cannot initialize without this information. Panic!
+			panic("[cpumanager] unable to determine reserved CPU resources for pool policy")
+		}
+		if reservedCPUs.IsZero() {
+			// Panic!
+			//
+			// The pool policy requires this to be nonzero. Zero CPU reservation
+			// would allow the shared pool to be completely exhausted. At that point
+			// either we would violate our guarantee of exclusivity or need to evict
+			// any pod that has at least one container that requires zero CPUs.
+			// See the comments in policy_pool.go for more details.
+			panic("[cpumanager] the pool policy requires systemreserved.cpu + kubereserved.cpu to be greater than zero")
+		}
+
+		// Take the ceiling of the reservation, since fractional CPUs cannot be
+		// exclusively allocated.
+		reservedCPUsFloat := float64(reservedCPUs.MilliValue()) / 1000
+		numReservedCPUs := int(math.Ceil(reservedCPUsFloat))
+		policy = NewPoolPolicy(topo, numReservedCPUs)
+
 	default:
 		glog.Errorf("[cpumanager] Unknown policy \"%s\", falling back to default policy \"%s\"", cpuPolicyName, PolicyNone)
 		policy = NewNonePolicy()
 	}
 
 	stateImpl := state.NewFileState(
-		path.Join(stateFileDirecory, CPUManagerStateFileName),
-		policy.Name())
+		path.Join(stateFileDirectory, CPUManagerStateFileName),
+		policy.Name(),
+	)
 
 	manager := &manager{
 		policy:                     policy,
@@ -147,6 +184,7 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 		state:                      stateImpl,
 		machineInfo:                machineInfo,
 		nodeAllocatableReservation: nodeAllocatableReservation,
+		poolConfig:                 poolConfig,
 	}
 	return manager, nil
 }
