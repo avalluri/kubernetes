@@ -283,6 +283,8 @@ type KubeletConfiguration struct {
 	// This flag accepts a list of options. Acceptible options are `pods`, `system-reserved` & `kube-reserved`.
 	// Refer to [Node Allocatable](https://git.k8s.io/community/contributors/design-proposals/node/node-allocatable.md) doc for more information.
 	EnforceNodeAllocatable []string `json:"enforceNodeAllocatable"`
+	// CPU pool configuration for --cpu-manager-policy=pool
+	CPUPools map[string]string
 }
 
 type KubeletAuthorizationMode string

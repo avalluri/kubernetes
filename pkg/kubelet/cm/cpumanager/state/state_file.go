@@ -22,14 +22,14 @@ import (
 	"github.com/golang/glog"
 	"io/ioutil"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"os"
 	"sync"
 )
 
 type stateFileData struct {
-	PolicyName    string            `json:"policyName"`
-	DefaultCPUSet string            `json:"defaultCpuSet"`
-	Entries       map[string]string `json:"entries,omitempty"`
+	PolicyName    string             `json:"policyName"`
+	Pools        *PoolSet            `json:"pools"`
 }
 
 var _ State = &stateFile{}
@@ -45,31 +45,31 @@ type stateFile struct {
 func NewFileState(filePath string, policyName string) State {
 	stateFile := &stateFile{
 		stateFilePath: filePath,
-		cache:         NewMemoryState(),
+		cache:         nil,
 		policyName:    policyName,
 	}
 
-	if err := stateFile.tryRestoreState(); err != nil {
+	if pools, err := stateFile.tryRestoreState(); err != nil {
 		// could not restore state, init new state file
 		glog.Infof("[cpumanager] state file: initializing empty state file - reason: \"%s\"", err)
-		stateFile.cache.ClearState()
+		stateFile.cache = NewMemoryState(nil)
 		stateFile.storeState()
+	} else {
+		stateFile.cache = NewMemoryState(pools)
 	}
+
+	glog.Infof("[cpumanager] state file path: %s", filePath)
 
 	return stateFile
 }
 
 // tryRestoreState tries to read state file, upon any error,
 // err message is logged and state is left clean. un-initialized
-func (sf *stateFile) tryRestoreState() error {
+func (sf *stateFile) tryRestoreState() (*PoolSet, error) {
 	sf.Lock()
 	defer sf.Unlock()
 	var err error
-
-	// used when all parsing is ok
-	tmpAssignments := make(ContainerCPUAssignments)
-	tmpDefaultCPUSet := cpuset.NewCPUSet()
-	tmpContainerCPUSet := cpuset.NewCPUSet()
+	var pools *PoolSet
 
 	var content []byte
 
@@ -79,6 +79,7 @@ func (sf *stateFile) tryRestoreState() error {
 			glog.Errorf("[cpumanager] state file: unable to create state file \"%s\":%s", sf.stateFilePath, err.Error())
 			panic("[cpumanager] state file not created")
 		}
+
 		glog.Infof("[cpumanager] state file: created empty state file \"%s\"", sf.stateFilePath)
 	} else {
 		// File exists - try to read
@@ -86,33 +87,19 @@ func (sf *stateFile) tryRestoreState() error {
 
 		if err = json.Unmarshal(content, &readState); err != nil {
 			glog.Warningf("[cpumanager] state file: could not unmarshal, corrupted state file - \"%s\"", sf.stateFilePath)
-			return err
+			return nil, err
 		}
 
 		if sf.policyName != readState.PolicyName {
-			return fmt.Errorf("policy configured \"%s\" != policy from state file \"%s\"", sf.policyName, readState.PolicyName)
+			return nil, fmt.Errorf("policy configured \"%s\" != policy from state file \"%s\"", sf.policyName, readState.PolicyName)
 		}
 
-		if tmpDefaultCPUSet, err = cpuset.Parse(readState.DefaultCPUSet); err != nil {
-			glog.Warningf("[cpumanager] state file: could not parse state file - [defaultCpuSet:\"%s\"]", readState.DefaultCPUSet)
-			return err
-		}
-
-		for containerID, cpuString := range readState.Entries {
-			if tmpContainerCPUSet, err = cpuset.Parse(cpuString); err != nil {
-				glog.Warningf("[cpumanager] state file: could not parse state file - container id: %s, cpuset: \"%s\"", containerID, cpuString)
-				return err
-			}
-			tmpAssignments[containerID] = tmpContainerCPUSet
-		}
-
-		sf.cache.SetDefaultCPUSet(tmpDefaultCPUSet)
-		sf.cache.SetCPUAssignments(tmpAssignments)
+		pools = readState.Pools
 
 		glog.V(2).Infof("[cpumanager] state file: restored state from state file \"%s\"", sf.stateFilePath)
-		glog.V(2).Infof("[cpumanager] state file: defaultCPUSet: %s", tmpDefaultCPUSet.String())
 	}
-	return nil
+
+	return pools, nil
 }
 
 // saves state to a file, caller is responsible for locking
@@ -122,12 +109,7 @@ func (sf *stateFile) storeState() {
 
 	data := stateFileData{
 		PolicyName:    sf.policyName,
-		DefaultCPUSet: sf.cache.GetDefaultCPUSet().String(),
-		Entries:       map[string]string{},
-	}
-
-	for containerID, cset := range sf.cache.GetCPUAssignments() {
-		data.Entries[containerID] = cset.String()
+		Pools:         sf.cache.GetCPUPools(),
 	}
 
 	if content, err = json.Marshal(data); err != nil {
@@ -137,7 +119,12 @@ func (sf *stateFile) storeState() {
 	if err = ioutil.WriteFile(sf.stateFilePath, content, 0644); err != nil {
 		panic("[cpumanager] state file not written")
 	}
-	return
+}
+
+func (sf *stateFile) GetCPUPools() *PoolSet {
+	sf.RLock()
+	defer sf.RUnlock()
+	return sf.cache.GetCPUPools()
 }
 
 func (sf *stateFile) GetCPUSet(containerID string) (cpuset.CPUSet, bool) {
@@ -166,6 +153,18 @@ func (sf *stateFile) GetCPUAssignments() ContainerCPUAssignments {
 	sf.RLock()
 	defer sf.RUnlock()
 	return sf.cache.GetCPUAssignments()
+}
+
+func (sf *stateFile) GetPoolCPUs() map[string]cpuset.CPUSet {
+	sf.RLock()
+	defer sf.RUnlock()
+	return sf.cache.GetPoolCPUs()
+}
+
+func (sf *stateFile) GetPoolAssignments() map[string]cpuset.CPUSet {
+	sf.RLock()
+	defer sf.RUnlock()
+	return sf.cache.GetPoolAssignments()
 }
 
 func (sf *stateFile) SetCPUSet(containerID string, cset cpuset.CPUSet) {
@@ -200,5 +199,38 @@ func (sf *stateFile) ClearState() {
 	sf.Lock()
 	defer sf.Unlock()
 	sf.cache.ClearState()
+	sf.storeState()
+}
+
+func (sf *stateFile) SetAllocator(allocfn AllocCpuFunc, t *topology.CPUTopology) {
+	sf.cache.SetAllocator(allocfn, t)
+}
+
+func (sf *stateFile) Reconfigure(cfg PoolConfig) error {
+	sf.Lock()
+	defer sf.Unlock()
+
+	err := sf.cache.Reconfigure(cfg)
+	if err == nil {
+		sf.storeState()
+	}
+
+	return err
+}
+
+func (sf *stateFile) AllocateCPU(id string, milliCPU int64, flags CpuFlags, pool string) (*cpuset.CPUSet, error) {
+	sf.Lock()
+	defer sf.Unlock()
+
+	cset, err := sf.cache.AllocateCPU(id, milliCPU, flags, pool)
+	sf.storeState()
+
+	return cset, err
+}
+
+func (sf *stateFile) ReleaseCPU(id string) {
+	sf.Lock()
+	defer sf.Unlock()
+	sf.cache.ReleaseCPU(id)
 	sf.storeState()
 }

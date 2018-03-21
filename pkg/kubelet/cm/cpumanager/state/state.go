@@ -18,6 +18,7 @@ package state
 
 import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 )
 
 // ContainerCPUAssignments type used in cpu manger state
@@ -34,10 +35,13 @@ func (as ContainerCPUAssignments) Clone() ContainerCPUAssignments {
 
 // Reader interface used to read current cpu/pod assignment state
 type Reader interface {
+	GetCPUPools() *PoolSet
 	GetCPUSet(containerID string) (cpuset.CPUSet, bool)
 	GetDefaultCPUSet() cpuset.CPUSet
 	GetCPUSetOrDefault(containerID string) cpuset.CPUSet
 	GetCPUAssignments() ContainerCPUAssignments
+	GetPoolCPUs() map[string]cpuset.CPUSet
+	GetPoolAssignments() map[string]cpuset.CPUSet
 }
 
 type writer interface {
@@ -46,6 +50,10 @@ type writer interface {
 	SetCPUAssignments(ContainerCPUAssignments)
 	Delete(containerID string)
 	ClearState()
+	SetAllocator(allocfn AllocCpuFunc, t *topology.CPUTopology)
+	Reconfigure(cfg PoolConfig) error
+	AllocateCPU(id string, milliCPU int64, flags CpuFlags, pool string) (* cpuset.CPUSet, error)
+	ReleaseCPU(id string)
 }
 
 // State interface provides methods for tracking and setting cpu/pod assignment
