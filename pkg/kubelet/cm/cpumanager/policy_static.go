@@ -191,3 +191,7 @@ func requestedCPU(pod *v1.Pod, container *v1.Container) (int64, state.CpuFlags) 
 
 	return cpu, flags
 }
+
+func (p *staticPolicy) GetCapacity(s state.State) v1.ResourceList {
+	return v1.ResourceList{}
+}

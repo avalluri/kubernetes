@@ -891,3 +891,11 @@ func (cm *containerManagerImpl) GetCapacity() v1.ResourceList {
 func (cm *containerManagerImpl) GetDevicePluginResourceCapacity() (v1.ResourceList, []string) {
 	return cm.devicePluginManager.GetCapacity()
 }
+
+func (cm *containerManagerImpl) GetAdditionalCapacity() v1.ResourceList {
+	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager) {
+		return cm.cpuManager.GetCapacity()
+	}
+
+	return v1.ResourceList{}
+}

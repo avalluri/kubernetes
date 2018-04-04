@@ -24,12 +24,13 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
-
-//	admission "k8s.io/kubernetes/plugin/pkg/admission/cpupool"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // PolicyPool is the name of the pool policy
 const PolicyPool policyName = "pool"
+
+const CPUPoolResourcePrefix = "cpupool."
 
 var _ Policy = &poolPolicy{}
 
@@ -127,4 +128,15 @@ func (p *poolPolicy) RemoveContainer(s state.State, containerID string) error {
 	s.ReleaseCPU(containerID)
 
 	return nil
+}
+
+func (p *poolPolicy) GetCapacity(s state.State) v1.ResourceList {
+	capacity := v1.ResourceList{}
+
+	for poolName, cpus := range s.GetPoolCPUs() {
+		resourceName := v1.ResourceName(CPUPoolResourcePrefix + poolName)
+		capacity[resourceName] = *resource.NewMilliQuantity(int64(cpus.Size()*1000), resource.DecimalSI)
+	}
+
+	return capacity
 }
