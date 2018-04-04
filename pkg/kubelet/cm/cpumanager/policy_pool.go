@@ -21,11 +21,12 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 
-//	admission "k8s.io/kubernetes/plugin/pkg/admission/cpupool"
+	admission "k8s.io/kubernetes/plugin/pkg/admission/cpupool"
 )
 
 // PolicyPool is the name of the pool policy
@@ -126,4 +127,15 @@ func (p *poolPolicy) RemoveContainer(s state.State, containerID string) error {
 	s.ReleaseCPU(containerID)
 
 	return nil
+}
+
+func (p *poolPolicy) GetCapacity(s state.State) v1.ResourceList {
+	capacity := v1.ResourceList{}
+
+	for poolName, cpus := range s.GetPoolCPUs() {
+		resourceName := v1.ResourceName(admission.ResourcePrefix + poolName)
+		capacity[resourceName] = *resource.NewMilliQuantity(int64(cpus.Size()*1000), resource.DecimalSI)
+	}
+
+	return capacity
 }
