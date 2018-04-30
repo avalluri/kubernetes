@@ -65,6 +65,8 @@ type Manager interface {
 
 	// State returns a read-only interface to the internal CPU manager state.
 	State() state.Reader
+
+	GetCapacity() v1.ResourceList
 }
 
 type manager struct {
@@ -101,7 +103,7 @@ var _ Manager = &manager{}
 func NewManager(
 	cpuPolicyName string,
 	reconcilePeriod time.Duration,
-	cpuPools map[string][]int,
+	cpuPoolsConfig string,
 	machineInfo *cadvisorapi.MachineInfo,
 	nodeAllocatableReservation v1.ResourceList,
 	stateFileDirectory string,
@@ -167,7 +169,7 @@ func NewManager(
 		// exclusively allocated.
 		reservedCPUsFloat := float64(reservedCPUs.MilliValue()) / 1000
 		numReservedCPUs := int(math.Ceil(reservedCPUsFloat))
-		policy = NewPoolPolicy(topo, numReservedCPUs, cpuPools)
+		policy = NewPoolPolicy(topo, numReservedCPUs, cpuPoolsConfig)
 
 	default:
 		glog.Errorf("[cpumanager] Unknown policy \"%s\", falling back to default policy \"%s\"", cpuPolicyName, PolicyNone)
@@ -316,4 +318,8 @@ func (m *manager) updateContainerCPUSet(containerID string, cpus cpuset.CPUSet) 
 		&runtimeapi.LinuxContainerResources{
 			CpusetCpus: cpus.String(),
 		})
+}
+
+func (m *manager) GetCapacity() v1.ResourceList {
+	return m.policy.GetCapacity()
 }

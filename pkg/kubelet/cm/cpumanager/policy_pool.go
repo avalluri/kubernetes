@@ -17,11 +17,17 @@ limitations under the License.
 package cpumanager
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/ioutil"
+	"strings"
+	"strconv"
 
 	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
-	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
+	"k8s.io/apimachinery/pkg/api/resource"
+//	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
@@ -73,15 +79,29 @@ var _ Policy = &poolPolicy{}
 // potentially sharing their allocated CPUs for up to the CPU manager
 // reconcile period.
 
-type CPUPool struct {
-	cpus cpuset.CPUSet
+type CPUPoolInfo struct {
+	CPUset string `json:"cpuset"`
+	Flags  string `json:"flags,omitempty"`
+}
+
+type CPUPools map[string]cpuset.CPUSet
+
+func (p *CPUPools) GetCapacity() v1.ResourceList {
+	capacity := v1.ResourceList{}
+
+	for poolName, cpus := range *p {
+		resourceName := v1.ResourceName(CPUPoolPrefix + poolName)
+		capacity[resourceName] = *resource.NewMilliQuantity(int64(cpus.Size()*1000),resource.DecimalSI)
+	}
+
+	return capacity
 }
 
 type poolPolicy struct {
 	// cpu socket topology
 	topology *topology.CPUTopology
 	// CPU pools
-	pools map[string]cpuset.CPUSet
+	pools CPUPools
 	// set of CPUs that is not available for exclusive assignment
 	reserved cpuset.CPUSet
 }
@@ -95,20 +115,81 @@ const CpuPoolReserved = "reserved"
 // default: pool for workloads that don't ask for a specific pool
 const CpuPoolDefault = "default"
 
+const CPUPoolPrefix string = "cpupool."
+
+func parseCPUSet(strCPUSet string) (cpuset.CPUSet, error) {
+	var cpus []int
+
+	for _, strCPU := range strings.Split(strCPUSet, ",") {
+		/* check if its range */
+        splitN := strings.SplitN(strCPU, "-", 2)
+		if len(splitN) == 2 {
+			var low, up int64
+			var err error
+            if low, err = strconv.ParseInt(splitN[0], 10, 64); err != nil {
+                return cpuset.CPUSet{}, err
+            }
+            if up, err = strconv.ParseInt(splitN[1], 10, 64); err != nil {
+                return cpuset.CPUSet{}, err
+			}
+			for i := low ; i <= up; i++ {
+				cpus = append(cpus, int(i))
+			}
+        } else if len(splitN) == 1 {
+			var n int64
+			var err error
+            if n, err = strconv.ParseInt(splitN[0], 10, 64); err != nil {
+				return cpuset.CPUSet{}, err
+			}
+			cpus = append(cpus, int(n))
+        } else {
+            return cpuset.CPUSet{}, errors.New("Invalid cpupool config")
+        }
+	}
+
+	return cpuset.NewCPUSet(cpus...), nil
+}
+
+
+func parsePoolConfig(configFile string) (CPUPools, error) {
+	if len(configFile) == 0{
+        return nil, errors.New("No configuration file provided")
+    }
+
+	raw, err := ioutil.ReadFile(configFile);
+    if err != nil {
+        return nil, err
+	}
+	
+	var poolConfig map[string]CPUPoolInfo
+	if err = json.Unmarshal(raw, &poolConfig); err != nil {
+        return nil, err
+	}
+
+	pools := make(CPUPools)
+	for poolName, poolInfo := range poolConfig {
+		cpuset, err := parseCPUSet(poolInfo.CPUset);
+		if err != nil {
+			return nil, err
+		}
+		pools[poolName] = cpuset
+		glog.Infof("[cpumanager] CPU pool %s => CPUs %s", poolName, pools[poolName].String())
+	}
+	
+	return pools, nil
+}
 
 // NewPoolPolicy returns a CPU manager policy that does not change CPU
 // assignments for exclusively pinned guaranteed containers after the main
 // container process starts.
-func NewPoolPolicy(topology *topology.CPUTopology, numReservedCPUs int, poolConfig map[string][]int) Policy {
+func NewPoolPolicy(topology *topology.CPUTopology, numReservedCPUs int, poolConfig string) Policy {
 	var reservedSet, reservedPool, defaultPool cpuset.CPUSet
+	var pools CPUPools
 	var err error
 	var ok bool
-	
-	pools := make(map[string]cpuset.CPUSet)
 
-	for name, cpuids := range poolConfig {
-		pools[name] = cpuset.NewCPUSet(cpuids...)
-		glog.Infof("[cpumanager] CPU pool %s => CPUs %s", name, pools[name].String())
+	if pools, err = parsePoolConfig(poolConfig); err != nil {
+		panic(fmt.Sprintf("[cpumanager] %s", err))
 	}
 
 	if reservedPool, ok = pools[CpuPoolReserved]; !ok {
@@ -223,4 +304,8 @@ func (p *poolPolicy) RemoveContainer(s state.State, containerID string) error {
 		s.Delete(containerID)
 	}
 	return nil
+}
+
+func (p *poolPolicy) GetCapacity() v1.ResourceList {
+	return p.pools.GetCapacity()
 }

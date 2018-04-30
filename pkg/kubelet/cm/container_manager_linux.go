@@ -278,7 +278,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		cm.cpuManager, err = cpumanager.NewManager(
 			nodeConfig.ExperimentalCPUManagerPolicy,
 			nodeConfig.ExperimentalCPUManagerReconcilePeriod,
-			nodeConfig.ExperimentalCPUPools,
+			nodeConfig.ExperimentalCPUPoolsConfig,
 			machineInfo,
 			cm.GetNodeAllocatableReservation(),
 			nodeConfig.KubeletRootDir,
@@ -890,4 +890,12 @@ func (cm *containerManagerImpl) GetCapacity() v1.ResourceList {
 
 func (cm *containerManagerImpl) GetDevicePluginResourceCapacity() (v1.ResourceList, []string) {
 	return cm.devicePluginManager.GetCapacity()
+}
+
+func (cm *containerManagerImpl) GetAdditionalCapacity() v1.ResourceList {
+	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager) {
+		return cm.cpuManager.GetCapacity()
+	}
+
+	return v1.ResourceList{}
 }

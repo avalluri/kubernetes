@@ -74,6 +74,9 @@ type ContainerManager interface {
 	// and inactive device plugin resources previously registered on the node.
 	GetDevicePluginResourceCapacity() (v1.ResourceList, []string)
 
+	// GetAdditionalCapacity returns the amount of additional compute resources tracked by container manager on the node.
+	GetAdditionalCapacity() v1.ResourceList
+
 	// UpdateQOSCgroups performs housekeeping updates to ensure that the top
 	// level QoS containers have their desired state in a thread-safe way
 	UpdateQOSCgroups() error
@@ -106,7 +109,7 @@ type NodeConfig struct {
 	ExperimentalQOSReserved               map[v1.ResourceName]int64
 	ExperimentalCPUManagerPolicy          string
 	ExperimentalCPUManagerReconcilePeriod time.Duration
-	ExperimentalCPUPools map[string][]int
+	ExperimentalCPUPoolsConfig string
 }
 
 type NodeAllocatableConfig struct {

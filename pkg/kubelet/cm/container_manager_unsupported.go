@@ -79,6 +79,10 @@ func (cm *unsupportedContainerManager) GetDevicePluginResourceCapacity() (v1.Res
 	return nil, []string{}
 }
 
+func (cm *unsupportedContainerManager) GetAdditioalCapacity() v1.ResourceList {
+	return nil
+}
+
 func (cm *unsupportedContainerManager) NewPodContainerManager() PodContainerManager {
 	return &unsupportedPodContainerManager{}
 }

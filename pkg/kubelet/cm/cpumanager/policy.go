@@ -27,4 +27,5 @@ type Policy interface {
 	Start(s state.State)
 	AddContainer(s state.State, pod *v1.Pod, container *v1.Container, containerID string) error
 	RemoveContainer(s state.State, containerID string) error
+	GetCapacity() v1.ResourceList
 }

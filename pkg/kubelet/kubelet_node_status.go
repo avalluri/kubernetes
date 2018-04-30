@@ -612,6 +612,13 @@ func (kl *Kubelet) setNodeStatusMachineInfo(node *v1.Node) {
 			glog.V(2).Infof("Remove capacity for %s", removedResource)
 			delete(node.Status.Capacity, v1.ResourceName(removedResource))
 		}
+
+		if additionalCapacity := kl.containerManager.GetAdditionalCapacity(); additionalCapacity != nil {
+			for k, v := range additionalCapacity {
+				glog.V(2).Infof("Update capacity for %s to %d", k, v.Value())
+				node.Status.Capacity[k] = v
+			}
+		}
 	}
 
 	// Set Allocatable.

@@ -288,7 +288,7 @@ type KubeletConfiguration struct {
 	// Refer to [Node Allocatable](https://git.k8s.io/community/contributors/design-proposals/node/node-allocatable.md) doc for more information.
 	EnforceNodeAllocatable []string
 	// CPU pool configuration for --cpu-manager-policy=pooled
-	CPUPools map[string][]int
+	CPUPoolsConfig string
 }
 
 type KubeletAuthorizationMode string
