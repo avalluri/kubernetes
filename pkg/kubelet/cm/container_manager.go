@@ -78,7 +78,7 @@ type ContainerManager interface {
 	// GetAdditionalCapacity returns the amount of additional compute resources tracked by container manager on the node.
 	// FIXME(avalluri): This should merge with GetCapacity() which needs changes
 	// in kubelet the way how cm.GetCapacity() used.
-	GetAdditionalCapacity() v1.ResourceList
+	GetAdditionalCapacity() (v1.ResourceList, []string)
 
 	// UpdateQOSCgroups performs housekeeping updates to ensure that the top
 	// level QoS containers have their desired state in a thread-safe way

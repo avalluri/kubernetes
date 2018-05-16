@@ -50,6 +50,6 @@ func (p *nonePolicy) RemoveContainer(s state.State, containerID string) error {
 	return nil
 }
 
-func (p *nonePolicy) GetCapacity(s state.State) v1.ResourceList {
-	return v1.ResourceList{}
+func (p *nonePolicy) GetCapacity(s state.State) (v1.ResourceList, []string) {
+	return v1.ResourceList{}, []string{}
 }

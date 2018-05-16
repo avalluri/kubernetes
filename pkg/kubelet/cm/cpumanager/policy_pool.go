@@ -141,6 +141,6 @@ func (p *poolPolicy) RemoveContainer(s state.State, containerID string) error {
 	return nil
 }
 
-func (p *poolPolicy) GetCapacity(s state.State) v1.ResourceList {
+func (p *poolPolicy) GetCapacity(s state.State) (v1.ResourceList, []string) {
 	return s.GetPoolCapacity()
 }

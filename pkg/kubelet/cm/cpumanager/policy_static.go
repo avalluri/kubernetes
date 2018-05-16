@@ -187,6 +187,6 @@ func guaranteedCPUs(pod *v1.Pod, container *v1.Container) int {
        return int(cpuQuantity.Value())
 }
 
-func (p *staticPolicy) GetCapacity(s state.State) v1.ResourceList {
-	return v1.ResourceList{}
+func (p *staticPolicy) GetCapacity(s state.State) (v1.ResourceList, []string) {
+	return v1.ResourceList{}, []string{}
 }

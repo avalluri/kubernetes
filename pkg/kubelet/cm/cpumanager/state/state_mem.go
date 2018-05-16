@@ -122,8 +122,8 @@ func (s *stateMemory) GetPoolAssignments() map[string]cpuset.CPUSet {
 	return nil
 }
 
-func (s *stateMemory) GetPoolCapacity() v1.ResourceList {
-	return v1.ResourceList{}
+func (s *stateMemory) GetPoolCapacity() (v1.ResourceList, []string) {
+	return v1.ResourceList{}, []string{}
 }
 
 func (s *stateMemory) SetAllocator(allocfn pool.AllocCpuFunc, t *topology.CPUTopology) {

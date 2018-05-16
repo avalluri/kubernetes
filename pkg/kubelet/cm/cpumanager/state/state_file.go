@@ -256,7 +256,7 @@ func (sf *stateFile) ReleaseCPU(id string) {
 	sf.storeState()
 }
 
-func (sf *stateFile) GetPoolCapacity() v1.ResourceList {
+func (sf *stateFile) GetPoolCapacity() (v1.ResourceList, []string) {
 	sf.RLock()
 	defer sf.RUnlock()
 

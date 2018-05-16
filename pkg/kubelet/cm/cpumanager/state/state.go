@@ -43,7 +43,7 @@ type Reader interface {
 	GetCPUAssignments() ContainerCPUAssignments
 	GetPoolCPUs() map[string]cpuset.CPUSet
 	GetPoolAssignments() map[string]cpuset.CPUSet
-	GetPoolCapacity() v1.ResourceList
+	GetPoolCapacity() (v1.ResourceList, []string)
 }
 
 type writer interface {

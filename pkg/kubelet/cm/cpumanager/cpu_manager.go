@@ -66,7 +66,7 @@ type Manager interface {
 	// State returns a read-only interface to the internal CPU manager state.
 	State() state.Reader
 
-	GetCapacity() v1.ResourceList
+	GetCapacity() (v1.ResourceList, []string)
 }
 
 type manager struct {
@@ -312,6 +312,6 @@ func (m *manager) updateContainerCPUSet(containerID string, cpus cpuset.CPUSet) 
 		})
 }
 
-func (m *manager) GetCapacity() v1.ResourceList {
+func (m *manager) GetCapacity() (v1.ResourceList, []string) {
 	return m.policy.GetCapacity(m.state)
 }

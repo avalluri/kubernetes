@@ -121,6 +121,7 @@ type PoolSet struct {
 	free       cpuset.CPUSet         // free CPUs
 	stats      poolcache.PoolCache   // CPU pool stats/metrics cache
 	reconcile  bool                  // whether needs reconcilation
+	obsolete   []string              // names of obsolete pools due to reconfigure
 }
 
 // Create default node CPU pool configuration.
@@ -486,6 +487,8 @@ func (ps *PoolSet) removePool(pool string) {
 	if p, ok := ps.pools[pool]; ok {
 		ps.free = ps.free.Union(p.shared)
 		delete(ps.pools, pool)
+		logInfo("adding pool %s to obsolete list", pool)
+		ps.obsolete = append(ps.obsolete, ResourcePrefix+pool)
 	}
 }
 
@@ -822,7 +825,7 @@ func (ps *PoolSet) GetContainerPoolName(id string) string {
 }
 
 // Get the CPU capacity of pools.
-func (ps *PoolSet) GetPoolCapacity() v1.ResourceList {
+func (ps *PoolSet) GetPoolCapacity() (v1.ResourceList, []string) {
 	cap := v1.ResourceList{}
 
 	for pool, p := range ps.pools {
@@ -831,7 +834,7 @@ func (ps *PoolSet) GetPoolCapacity() v1.ResourceList {
 		cap[res] = *resource.NewQuantity(int64(qty), resource.DecimalSI)
 	}
 
-	return cap
+	return cap, ps.obsolete
 }
 
 // Get the (shared) CPU sets for pools.

@@ -883,10 +883,10 @@ func (cm *containerManagerImpl) GetDevicePluginResourceCapacity() (v1.ResourceLi
 	return cm.deviceManager.GetCapacity()
 }
 
-func (cm *containerManagerImpl) GetAdditionalCapacity() v1.ResourceList {
+func (cm *containerManagerImpl) GetAdditionalCapacity() (v1.ResourceList, []string) {
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager) {
 		return cm.cpuManager.GetCapacity()
 	}
 
-	return v1.ResourceList{}
+	return v1.ResourceList{}, []string{}
 }
